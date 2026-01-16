@@ -168,7 +168,7 @@ router.get('/authorize', (req: Request, res: Response) => {
     'state',
     'code_challenge',
     'code_challenge_method',
-    'prompt',
+    // 'prompt',
     'login_hint',
     'domain_hint',
   ];
