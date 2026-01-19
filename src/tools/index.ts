@@ -12,6 +12,8 @@ export interface ToolDefinition {
   description: string;
   /** Whether this tool is read-only (doesn't modify data) */
   readOnly: boolean;
+  /** OAuth scopes required by this tool */
+  requiredScopes: string[];
   inputSchema: {
     type: 'object';
     properties: Record<string, unknown>;
@@ -83,6 +85,35 @@ export function getFilteredTools(): ToolDefinition[] {
   }
 
   return tools;
+}
+
+/** Base scopes always required for the server to function */
+const BASE_SCOPES = ['User.Read', 'offline_access'];
+
+/**
+ * Get required OAuth scopes based on enabled tools
+ * Returns only the scopes needed for the currently enabled tools.
+ */
+export function getRequiredScopes(): string[] {
+  const tools = getFilteredTools();
+  
+  // Collect unique scopes from all enabled tools
+  const scopeSet = new Set<string>(BASE_SCOPES);
+  
+  for (const tool of tools) {
+    for (const scope of tool.requiredScopes) {
+      scopeSet.add(scope);
+    }
+  }
+  
+  const scopes = Array.from(scopeSet);
+  
+  logger.debug('Required scopes computed', {
+    enabledTools: tools.length,
+    scopes,
+  });
+  
+  return scopes;
 }
 
 /**

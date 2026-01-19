@@ -9,7 +9,8 @@
 
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { getConfig, getAuthEndpoints, SUPPORTED_SCOPES } from '../config.js';
+import { getConfig, getAuthEndpoints } from '../config.js';
+import { getRequiredScopes } from '../tools/index.js';
 import logger from '../utils/logger.js';
 
 const router = Router();
@@ -49,13 +50,14 @@ function getBaseUrl(req: Request): string {
  */
 router.get('/.well-known/oauth-protected-resource', (req: Request, res: Response) => {
   const baseUrl = getBaseUrl(req);
+  const scopes = getRequiredScopes();
   
-  logger.debug('Protected resource metadata requested', { baseUrl });
+  logger.debug('Protected resource metadata requested', { baseUrl, scopes });
   
   res.json({
     resource: `${baseUrl}/mcp`,
     authorization_servers: [baseUrl],
-    scopes_supported: [...SUPPORTED_SCOPES],
+    scopes_supported: scopes,
     bearer_methods_supported: ['header'],
     resource_documentation: `${baseUrl}/docs`,
   });
@@ -70,8 +72,9 @@ router.get('/.well-known/oauth-protected-resource', (req: Request, res: Response
  */
 router.get('/.well-known/oauth-authorization-server', (req: Request, res: Response) => {
   const baseUrl = getBaseUrl(req);
+  const scopes = getRequiredScopes();
   
-  logger.debug('Authorization server metadata requested', { baseUrl });
+  logger.debug('Authorization server metadata requested', { baseUrl, scopes });
   
   res.json({
     issuer: baseUrl,
@@ -83,7 +86,7 @@ router.get('/.well-known/oauth-authorization-server', (req: Request, res: Respon
     grant_types_supported: ['authorization_code', 'refresh_token'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
     code_challenge_methods_supported: ['S256'],
-    scopes_supported: [...SUPPORTED_SCOPES],
+    scopes_supported: scopes,
   });
 });
 
@@ -183,9 +186,10 @@ router.get('/authorize', (req: Request, res: Response) => {
   // Always use our registered client_id
   microsoftAuthUrl.searchParams.set('client_id', config.clientId);
   
-  // Ensure we have minimal required scopes if none provided
+  // Ensure we have required scopes if none provided (based on enabled tools)
   if (!microsoftAuthUrl.searchParams.get('scope')) {
-    microsoftAuthUrl.searchParams.set('scope', 'User.Read Mail.Read offline_access');
+    const requiredScopes = getRequiredScopes();
+    microsoftAuthUrl.searchParams.set('scope', requiredScopes.join(' '));
   }
   
   logger.info('Redirecting to Microsoft authorization', {
