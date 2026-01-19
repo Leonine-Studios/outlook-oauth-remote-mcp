@@ -8,6 +8,7 @@ import { getConfig } from './config.js';
 import { createMcpServer } from './mcp/handler.js';
 import authRouter from './auth/metadata.js';
 import { bearerAuthMiddleware, AuthenticatedRequest } from './auth/middleware.js';
+import { rateLimitMiddleware, getRateLimitStats } from './middleware/rate-limiter.js';
 import { runWithContext } from './utils/context.js';
 import logger, { setLogLevel } from './utils/logger.js';
 
@@ -39,6 +40,11 @@ export function createApp() {
       'Access-Control-Allow-Headers',
       'Origin, X-Requested-With, Content-Type, Accept, Authorization, mcp-protocol-version'
     );
+    // Expose rate limit headers to clients
+    res.header(
+      'Access-Control-Expose-Headers',
+      'X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After'
+    );
     
     // Handle preflight requests
     if (req.method === 'OPTIONS') {
@@ -49,12 +55,18 @@ export function createApp() {
     next();
   });
   
-  // Health check endpoint
+  // Health check endpoint with rate limit stats
   app.get('/health', (_req: Request, res: Response) => {
+    const rateLimitStats = getRateLimitStats();
+    
     res.json({
       status: 'healthy',
       version: VERSION,
       timestamp: new Date().toISOString(),
+      rateLimiting: {
+        activeUsers: rateLimitStats.activeUsers,
+        trackedRequests: rateLimitStats.totalTrackedRequests,
+      },
     });
   });
   
@@ -79,7 +91,10 @@ export function createApp() {
   // Create MCP server
   const mcpServer = createMcpServer(VERSION);
   
-  // MCP endpoint - requires authentication
+  // Create rate limit middleware instance
+  const rateLimit = rateLimitMiddleware();
+  
+  // MCP endpoint - requires authentication and rate limiting
   const handleMcpRequest = async (req: AuthenticatedRequest, res: Response) => {
     if (!req.auth?.token) {
       res.status(401).json({
@@ -127,8 +142,9 @@ export function createApp() {
   };
   
   // Handle both GET (SSE) and POST for MCP
-  app.get('/mcp', bearerAuthMiddleware, handleMcpRequest);
-  app.post('/mcp', bearerAuthMiddleware, handleMcpRequest);
+  // Middleware chain: auth -> rate limit -> handler
+  app.get('/mcp', bearerAuthMiddleware, rateLimit, handleMcpRequest);
+  app.post('/mcp', bearerAuthMiddleware, rateLimit, handleMcpRequest);
   
   return app;
 }
@@ -145,6 +161,11 @@ export async function startServer(): Promise<void> {
       host: config.host,
       port: config.port,
       version: VERSION,
+      rateLimiting: {
+        requests: config.rateLimitRequests,
+        windowMs: config.rateLimitWindowMs,
+      },
+      allowedTenants: config.allowedTenants.length > 0 ? config.allowedTenants.length : 'all',
     });
     logger.info('Endpoints available', {
       mcp: `http://${config.host === '0.0.0.0' ? 'localhost' : config.host}:${config.port}/mcp`,

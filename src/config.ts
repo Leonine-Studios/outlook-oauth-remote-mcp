@@ -17,6 +17,12 @@ export interface Config {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** CORS allowed origins */
   corsOrigin: string;
+  /** Rate limit: max requests per window */
+  rateLimitRequests: number;
+  /** Rate limit: window size in milliseconds */
+  rateLimitWindowMs: number;
+  /** Allowed tenant IDs (comma-separated, empty = all tenants allowed) */
+  allowedTenants: string[];
 }
 
 let cachedConfig: Config | null = null;
@@ -35,6 +41,13 @@ export function getConfig(): Config {
     throw new Error('MS365_MCP_CLIENT_ID environment variable is required');
   }
 
+  // Parse allowed tenants from comma-separated string
+  const allowedTenantsEnv = process.env.MS365_MCP_ALLOWED_TENANTS || '';
+  const allowedTenants = allowedTenantsEnv
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t.length > 0);
+
   cachedConfig = {
     clientId,
     clientSecret: process.env.MS365_MCP_CLIENT_SECRET || undefined,
@@ -43,6 +56,9 @@ export function getConfig(): Config {
     host: process.env.MS365_MCP_HOST || '0.0.0.0',
     logLevel: (process.env.MS365_MCP_LOG_LEVEL || 'info') as Config['logLevel'],
     corsOrigin: process.env.MS365_MCP_CORS_ORIGIN || '*',
+    rateLimitRequests: parseInt(process.env.MS365_MCP_RATE_LIMIT_REQUESTS || '30', 10),
+    rateLimitWindowMs: parseInt(process.env.MS365_MCP_RATE_LIMIT_WINDOW_MS || '60000', 10),
+    allowedTenants,
   };
 
   return cachedConfig;
