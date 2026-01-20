@@ -15,9 +15,30 @@ const listMailMessagesSchema = z.object({
   folderId: z.string().optional(),
   top: z.number().min(1).max(50).optional().default(10),
   skip: z.number().min(0).optional(),
-  filter: z.string().optional(),
-  search: z.string().optional(),
+  // User-friendly filter parameters
+  senderEmail: z.string().optional(),
+  receivedAfter: z.string().optional(),
+  receivedBefore: z.string().optional(),
+  isRead: z.boolean().optional(),
+  hasAttachments: z.boolean().optional(),
+  importance: z.enum(['low', 'normal', 'high']).optional(),
   orderBy: z.string().optional().default('receivedDateTime desc'),
+});
+
+const searchMailSchema = z.object({
+  query: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  participants: z.string().optional(),
+  subject: z.string().optional(),
+  body: z.string().optional(),
+  attachment: z.string().optional(),
+  hasAttachments: z.boolean().optional(),
+  importance: z.enum(['low', 'normal', 'high']).optional(),
+  received: z.string().optional(),
+  top: z.number().min(1).max(1000).optional().default(25),
 });
 
 const getMailMessageSchema = z.object({
@@ -83,16 +104,52 @@ async function listMailFolders() {
 }
 
 /**
- * List mail messages
+ * Build OData filter expression from user-friendly parameters
+ */
+function buildMailFilter(params: {
+  senderEmail?: string;
+  receivedAfter?: string;
+  receivedBefore?: string;
+  isRead?: boolean;
+  hasAttachments?: boolean;
+  importance?: string;
+}): string | undefined {
+  const filters: string[] = [];
+  
+  if (params.senderEmail) {
+    filters.push(`from/emailAddress/address eq '${params.senderEmail}'`);
+  }
+  if (params.receivedAfter) {
+    filters.push(`receivedDateTime ge ${params.receivedAfter}`);
+  }
+  if (params.receivedBefore) {
+    filters.push(`receivedDateTime le ${params.receivedBefore}`);
+  }
+  if (params.isRead !== undefined) {
+    filters.push(`isRead eq ${params.isRead}`);
+  }
+  if (params.hasAttachments !== undefined) {
+    filters.push(`hasAttachments eq ${params.hasAttachments}`);
+  }
+  if (params.importance) {
+    filters.push(`importance eq '${params.importance}'`);
+  }
+  
+  return filters.length > 0 ? filters.join(' and ') : undefined;
+}
+
+/**
+ * List mail messages with user-friendly filters
  */
 async function listMailMessages(params: Record<string, unknown>) {
   const parsed = listMailMessagesSchema.parse(params);
-  const { folderId, top, skip, filter, search, orderBy } = parsed;
+  const { folderId, top, skip, senderEmail, receivedAfter, receivedBefore, isRead, hasAttachments, importance, orderBy } = parsed;
   
   logger.info('Tool: list-mail-messages', { 
     user: getContextUserId(),
     folderId,
     top,
+    senderEmail,
   });
   
   try {
@@ -100,17 +157,95 @@ async function listMailMessages(params: Record<string, unknown>) {
     
     if (top) queryParams.set('$top', String(top));
     if (skip) queryParams.set('$skip', String(skip));
+    
+    // Build filter from user-friendly parameters
+    const filter = buildMailFilter({ senderEmail, receivedAfter, receivedBefore, isRead, hasAttachments, importance });
     if (filter) queryParams.set('$filter', filter);
-    if (search) queryParams.set('$search', `"${search}"`);
+    
     if (orderBy) queryParams.set('$orderby', orderBy);
     
-    queryParams.set('$select', 'id,subject,from,toRecipients,receivedDateTime,isRead,importance,hasAttachments,bodyPreview');
+    queryParams.set('$select', 'id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,importance,hasAttachments,bodyPreview');
     
     const endpoint = folderId 
       ? `/me/mailFolders/${folderId}/messages`
       : '/me/messages';
     
     const url = `${endpoint}?${queryParams.toString()}`;
+    
+    const response = await graphRequest<{ value: unknown[] }>(url);
+    return handleGraphResponse(response);
+  } catch (error) {
+    return formatErrorResponse(error);
+  }
+}
+
+/**
+ * Build KQL search query from parameters
+ */
+function buildMailSearchQuery(params: {
+  query?: string;
+  from?: string;
+  to?: string;
+  cc?: string;
+  bcc?: string;
+  participants?: string;
+  subject?: string;
+  body?: string;
+  attachment?: string;
+  hasAttachments?: boolean;
+  importance?: string;
+  received?: string;
+}): string {
+  const parts: string[] = [];
+  
+  // Add free-text query
+  if (params.query) {
+    parts.push(params.query);
+  }
+  
+  // Add KQL property filters
+  if (params.from) parts.push(`from:${params.from}`);
+  if (params.to) parts.push(`to:${params.to}`);
+  if (params.cc) parts.push(`cc:${params.cc}`);
+  if (params.bcc) parts.push(`bcc:${params.bcc}`);
+  if (params.participants) parts.push(`participants:${params.participants}`);
+  if (params.subject) parts.push(`subject:${params.subject}`);
+  if (params.body) parts.push(`body:${params.body}`);
+  if (params.attachment) parts.push(`attachment:${params.attachment}`);
+  if (params.hasAttachments !== undefined) parts.push(`hasAttachments:${params.hasAttachments}`);
+  if (params.importance) parts.push(`importance:${params.importance}`);
+  if (params.received) parts.push(`received:${params.received}`);
+  
+  return parts.join(' ');
+}
+
+/**
+ * Search mail messages using KQL $search
+ */
+async function searchMail(params: Record<string, unknown>) {
+  const parsed = searchMailSchema.parse(params);
+  const { query, from, to, cc, bcc, participants, subject, body, attachment, hasAttachments, importance, received, top } = parsed;
+  
+  logger.info('Tool: search-mail', { 
+    user: getContextUserId(),
+    query,
+    from,
+    top,
+  });
+  
+  try {
+    const searchQuery = buildMailSearchQuery({ query, from, to, cc, bcc, participants, subject, body, attachment, hasAttachments, importance, received });
+    
+    if (!searchQuery) {
+      return formatErrorResponse(new Error('At least one search parameter is required'));
+    }
+    
+    const queryParams = new URLSearchParams();
+    queryParams.set('$search', `"${searchQuery}"`);
+    if (top) queryParams.set('$top', String(top));
+    queryParams.set('$select', 'id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,importance,hasAttachments,bodyPreview');
+    
+    const url = `/me/messages?${queryParams.toString()}`;
     
     const response = await graphRequest<{ value: unknown[] }>(url);
     return handleGraphResponse(response);
@@ -454,7 +589,22 @@ export const mailToolDefinitions = [
   },
   {
     name: 'list-mail-messages',
-    description: 'List mail messages from a folder. Defaults to Inbox.',
+    description: `List and filter mail messages from a folder with structured filters. Defaults to Inbox.
+
+Use this tool for:
+- Browsing recent emails chronologically
+- Filtering by exact sender email address
+- Filtering by date range (receivedAfter/receivedBefore)
+- Filtering by read/unread status
+- Filtering by importance or attachments
+
+For full-text search in body/subject or searching by TO/CC/BCC recipients, use search-mail instead.
+
+Examples:
+- Get unread emails: { "isRead": false }
+- Get emails from specific sender: { "senderEmail": "max@company.com" }
+- Get emails from last week: { "receivedAfter": "2026-01-13T00:00:00Z" }
+- Get important emails with attachments: { "importance": "high", "hasAttachments": true }`,
     readOnly: true,
     requiredScopes: ['Mail.Read'],
     inputSchema: {
@@ -462,7 +612,32 @@ export const mailToolDefinitions = [
       properties: {
         folderId: {
           type: 'string',
-          description: 'Mail folder ID (default: Inbox)',
+          description: 'Mail folder ID (default: Inbox). Use list-mail-folders to get folder IDs.',
+        },
+        senderEmail: {
+          type: 'string',
+          description: 'Filter by exact sender email address. Example: "john.doe@company.com"',
+        },
+        receivedAfter: {
+          type: 'string',
+          description: 'Only messages received after this date/time (ISO 8601). Example: "2026-01-13T00:00:00Z"',
+        },
+        receivedBefore: {
+          type: 'string',
+          description: 'Only messages received before this date/time (ISO 8601). Example: "2026-01-20T23:59:59Z"',
+        },
+        isRead: {
+          type: 'boolean',
+          description: 'Filter by read status. true = read messages, false = unread messages',
+        },
+        hasAttachments: {
+          type: 'boolean',
+          description: 'Filter by attachment presence. true = only messages with attachments',
+        },
+        importance: {
+          type: 'string',
+          enum: ['low', 'normal', 'high'],
+          description: 'Filter by importance level',
         },
         top: {
           type: 'number',
@@ -472,14 +647,6 @@ export const mailToolDefinitions = [
           type: 'number',
           description: 'Number of messages to skip for pagination',
         },
-        filter: {
-          type: 'string',
-          description: 'OData filter expression',
-        },
-        search: {
-          type: 'string',
-          description: 'Search query',
-        },
         orderBy: {
           type: 'string',
           description: 'Sort order (default: receivedDateTime desc)',
@@ -487,6 +654,88 @@ export const mailToolDefinitions = [
       },
     },
     handler: listMailMessages,
+  },
+  {
+    name: 'search-mail',
+    description: `Search mail messages using full-text search (KQL). Searches across body, subject, and attachments.
+
+Use this tool for:
+- Full-text search in email body or attachments
+- Searching by TO/CC/BCC recipients (not possible with list-mail-messages)
+- Keyword queries across multiple fields
+- Finding emails by attachment filename
+
+For structured filtering (exact sender, date ranges, read/unread), use list-mail-messages instead.
+
+Note: Cannot combine with sorting ($orderby) - results are ranked by relevance.
+
+Examples:
+- Search for topic: { "query": "brainstorming session" }
+- Search from specific sender: { "from": "max", "query": "meeting notes" }
+- Search by recipient: { "to": "alice@company.com", "subject": "project" }
+- Search with date: { "query": "quarterly report", "received": ">=2026-01-01" }
+- Search by attachment: { "attachment": "budget.xlsx" }`,
+    readOnly: true,
+    requiredScopes: ['Mail.Read'],
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Free-text search query (searches body, subject, attachments)',
+        },
+        from: {
+          type: 'string',
+          description: 'Sender address or name. Example: "max@company.com" or "max"',
+        },
+        to: {
+          type: 'string',
+          description: 'Recipient in TO field. Example: "alice@company.com"',
+        },
+        cc: {
+          type: 'string',
+          description: 'Recipient in CC field',
+        },
+        bcc: {
+          type: 'string',
+          description: 'Recipient in BCC field',
+        },
+        participants: {
+          type: 'string',
+          description: 'Any participant (from/to/cc/bcc combined)',
+        },
+        subject: {
+          type: 'string',
+          description: 'Subject keyword',
+        },
+        body: {
+          type: 'string',
+          description: 'Body content keyword',
+        },
+        attachment: {
+          type: 'string',
+          description: 'Attachment filename. Example: "report.pdf"',
+        },
+        hasAttachments: {
+          type: 'boolean',
+          description: 'Has attachments',
+        },
+        importance: {
+          type: 'string',
+          enum: ['low', 'normal', 'high'],
+          description: 'Filter by importance',
+        },
+        received: {
+          type: 'string',
+          description: 'Date filter. Examples: ">=2026-01-13", "2026-01-13..2026-01-20"',
+        },
+        top: {
+          type: 'number',
+          description: 'Maximum number of results (default: 25, max: 1000)',
+        },
+      },
+    },
+    handler: searchMail,
   },
   {
     name: 'get-mail-message',

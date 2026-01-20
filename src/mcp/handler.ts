@@ -18,19 +18,6 @@ export function createMcpServer(version: string): McpServer {
     version,
   });
 
-  // Log when tools are listed
-  const originalListTools = server.server.listTools?.bind(server.server);
-  if (originalListTools) {
-    server.server.listTools = async () => {
-      const result = await originalListTools();
-      logger.info('tools/list response', { 
-        toolCount: result.tools?.length,
-        toolNames: result.tools?.map((t: { name: string }) => t.name),
-      });
-      return result;
-    };
-  }
-
   // Get filtered tools based on config (read-only mode and/or tool allowlist)
   const tools = getFilteredTools();
   

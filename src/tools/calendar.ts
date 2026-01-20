@@ -13,10 +13,40 @@ import { getContextUserId } from '../utils/context.js';
 
 const listCalendarEventsSchema = z.object({
   calendarId: z.string().optional(),
+  startAfter: z.string().optional(),
+  startBefore: z.string().optional(),
   top: z.number().min(1).max(50).optional().default(10),
   skip: z.number().min(0).optional(),
-  filter: z.string().optional(),
   orderBy: z.string().optional().default('start/dateTime'),
+});
+
+const searchCalendarEventsSchema = z.object({
+  query: z.string().optional(),
+  subject: z.string().optional(),
+  organizerEmail: z.string().optional(),
+  organizerName: z.string().optional(),
+  attendees: z.array(z.string()).optional(),
+  location: z.string().optional(),
+  isOnlineMeeting: z.boolean().optional(),
+  isAllDay: z.boolean().optional(),
+  startAfter: z.string().optional(),
+  startBefore: z.string().optional(),
+  top: z.number().min(1).max(50).optional().default(25),
+});
+
+const findMeetingTimesSchema = z.object({
+  attendees: z.array(z.object({
+    email: z.string(),
+    type: z.enum(['required', 'optional']).optional().default('required'),
+  })).min(1),
+  durationMinutes: z.number().min(15).max(480).default(60),
+  searchWindowStart: z.string(),
+  searchWindowEnd: z.string(),
+  meetingHoursStart: z.string().optional(),
+  meetingHoursEnd: z.string().optional(),
+  isOnlineMeeting: z.boolean().optional().default(false),
+  maxSuggestions: z.number().min(1).max(50).optional().default(10),
+  timeZone: z.string().optional(),
 });
 
 const getCalendarEventSchema = z.object({
@@ -84,14 +114,17 @@ async function listCalendars() {
 }
 
 /**
- * List calendar events
+ * List calendar events with date range filtering
+ * Uses calendarView for proper recurring event expansion
  */
 async function listCalendarEvents(params: Record<string, unknown>) {
-  const { calendarId, top, skip, filter, orderBy } = listCalendarEventsSchema.parse(params);
+  const { calendarId, startAfter, startBefore, top, skip, orderBy } = listCalendarEventsSchema.parse(params);
   
   logger.info('Tool: list-calendar-events', { 
     user: getContextUserId(),
     calendarId,
+    startAfter,
+    startBefore,
     top,
   });
   
@@ -100,10 +133,31 @@ async function listCalendarEvents(params: Record<string, unknown>) {
     
     if (top) queryParams.set('$top', String(top));
     if (skip) queryParams.set('$skip', String(skip));
-    if (filter) queryParams.set('$filter', filter);
     if (orderBy) queryParams.set('$orderby', orderBy);
     
-    queryParams.set('$select', 'id,subject,start,end,location,organizer,attendees,isAllDay,isCancelled,bodyPreview');
+    queryParams.set('$select', 'id,subject,start,end,location,organizer,attendees,isAllDay,isCancelled,isOnlineMeeting,onlineMeetingUrl,bodyPreview');
+    
+    // If date range is provided, use calendarView for proper recurring event expansion
+    if (startAfter && startBefore) {
+      queryParams.set('startDateTime', startAfter);
+      queryParams.set('endDateTime', startBefore);
+      
+      const endpoint = calendarId 
+        ? `/me/calendars/${calendarId}/calendarView`
+        : '/me/calendarView';
+      
+      const url = `${endpoint}?${queryParams.toString()}`;
+      const response = await graphRequest<{ value: unknown[] }>(url);
+      return handleGraphResponse(response);
+    }
+    
+    // Otherwise use events endpoint with filter
+    if (startAfter || startBefore) {
+      const filters: string[] = [];
+      if (startAfter) filters.push(`start/dateTime ge '${startAfter}'`);
+      if (startBefore) filters.push(`start/dateTime le '${startBefore}'`);
+      queryParams.set('$filter', filters.join(' and '));
+    }
     
     const endpoint = calendarId 
       ? `/me/calendars/${calendarId}/events`
@@ -112,6 +166,249 @@ async function listCalendarEvents(params: Record<string, unknown>) {
     const url = `${endpoint}?${queryParams.toString()}`;
     
     const response = await graphRequest<{ value: unknown[] }>(url);
+    return handleGraphResponse(response);
+  } catch (error) {
+    return formatErrorResponse(error);
+  }
+}
+
+/**
+ * Build filter expression for calendar event search
+ */
+function buildCalendarFilter(params: {
+  subject?: string;
+  organizerEmail?: string;
+  organizerName?: string;
+  location?: string;
+  isAllDay?: boolean;
+  startAfter?: string;
+  startBefore?: string;
+}): string | undefined {
+  const filters: string[] = [];
+  
+  if (params.subject) {
+    filters.push(`contains(subject, '${params.subject}')`);
+  }
+  if (params.organizerEmail) {
+    filters.push(`organizer/emailAddress/address eq '${params.organizerEmail}'`);
+  }
+  if (params.organizerName) {
+    filters.push(`contains(organizer/emailAddress/name, '${params.organizerName}')`);
+  }
+  if (params.location) {
+    filters.push(`contains(location/displayName, '${params.location}')`);
+  }
+  if (params.isAllDay !== undefined) {
+    filters.push(`isAllDay eq ${params.isAllDay}`);
+  }
+  if (params.startAfter) {
+    filters.push(`start/dateTime ge '${params.startAfter}'`);
+  }
+  if (params.startBefore) {
+    filters.push(`start/dateTime le '${params.startBefore}'`);
+  }
+  
+  return filters.length > 0 ? filters.join(' and ') : undefined;
+}
+
+/**
+ * Search calendar events with advanced filtering
+ */
+async function searchCalendarEvents(params: Record<string, unknown>) {
+  const parsed = searchCalendarEventsSchema.parse(params);
+  const { query, subject, organizerEmail, organizerName, attendees, location, isOnlineMeeting, isAllDay, startAfter, startBefore, top } = parsed;
+  
+  logger.info('Tool: search-calendar-events', { 
+    user: getContextUserId(),
+    query,
+    subject,
+    organizerEmail,
+    top,
+  });
+  
+  try {
+    const queryParams = new URLSearchParams();
+    
+    if (top) queryParams.set('$top', String(top));
+    queryParams.set('$select', 'id,subject,start,end,location,organizer,attendees,isAllDay,isCancelled,isOnlineMeeting,onlineMeetingUrl,bodyPreview');
+    
+    // Build filter from parameters
+    const filter = buildCalendarFilter({ subject, organizerEmail, organizerName, location, isAllDay, startAfter, startBefore });
+    
+    // If using date range with both dates, use calendarView
+    if (startAfter && startBefore) {
+      queryParams.set('startDateTime', startAfter);
+      queryParams.set('endDateTime', startBefore);
+      
+      // Apply additional filters if any (except date ones which are in URL params)
+      const nonDateFilter = buildCalendarFilter({ subject, organizerEmail, organizerName, location, isAllDay });
+      if (nonDateFilter) queryParams.set('$filter', nonDateFilter);
+      
+      const url = `/me/calendarView?${queryParams.toString()}`;
+      const response = await graphRequest<{ value: unknown[] }>(url);
+      
+      // Post-filter for properties not supported in $filter
+      let events = (response.data as { value: unknown[] })?.value || [];
+      
+      if (isOnlineMeeting !== undefined) {
+        events = events.filter((e: unknown) => {
+          const event = e as { isOnlineMeeting?: boolean };
+          return event.isOnlineMeeting === isOnlineMeeting;
+        });
+      }
+      
+      if (attendees?.length) {
+        events = events.filter((e: unknown) => {
+          const event = e as { attendees?: Array<{ emailAddress?: { address?: string } }> };
+          const eventAttendees = event.attendees || [];
+          return attendees.some(searchAttendee => 
+            eventAttendees.some(ea => 
+              ea.emailAddress?.address?.toLowerCase().includes(searchAttendee.toLowerCase())
+            )
+          );
+        });
+      }
+      
+      if (query) {
+        const queryLower = query.toLowerCase();
+        events = events.filter((e: unknown) => {
+          const event = e as { subject?: string; bodyPreview?: string; location?: { displayName?: string } };
+          return (
+            event.subject?.toLowerCase().includes(queryLower) ||
+            event.bodyPreview?.toLowerCase().includes(queryLower) ||
+            event.location?.displayName?.toLowerCase().includes(queryLower)
+          );
+        });
+      }
+      
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ value: events }, null, 2),
+        }],
+      };
+    }
+    
+    // Without date range, use events endpoint
+    if (filter) queryParams.set('$filter', filter);
+    
+    const url = `/me/events?${queryParams.toString()}`;
+    const response = await graphRequest<{ value: unknown[] }>(url);
+    
+    // Post-filter for properties not supported in $filter
+    let events = (response.data as { value: unknown[] })?.value || [];
+    
+    if (isOnlineMeeting !== undefined) {
+      events = events.filter((e: unknown) => {
+        const event = e as { isOnlineMeeting?: boolean };
+        return event.isOnlineMeeting === isOnlineMeeting;
+      });
+    }
+    
+    if (attendees?.length) {
+      events = events.filter((e: unknown) => {
+        const event = e as { attendees?: Array<{ emailAddress?: { address?: string } }> };
+        const eventAttendees = event.attendees || [];
+        return attendees.some(searchAttendee => 
+          eventAttendees.some(ea => 
+            ea.emailAddress?.address?.toLowerCase().includes(searchAttendee.toLowerCase())
+          )
+        );
+      });
+    }
+    
+    if (query) {
+      const queryLower = query.toLowerCase();
+      events = events.filter((e: unknown) => {
+        const event = e as { subject?: string; bodyPreview?: string; location?: { displayName?: string } };
+        return (
+          event.subject?.toLowerCase().includes(queryLower) ||
+          event.bodyPreview?.toLowerCase().includes(queryLower) ||
+          event.location?.displayName?.toLowerCase().includes(queryLower)
+        );
+      });
+    }
+    
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ value: events }, null, 2),
+      }],
+    };
+  } catch (error) {
+    return formatErrorResponse(error);
+  }
+}
+
+/**
+ * Find available meeting times when all attendees are free
+ */
+async function findMeetingTimes(params: Record<string, unknown>) {
+  const parsed = findMeetingTimesSchema.parse(params);
+  const { attendees, durationMinutes, searchWindowStart, searchWindowEnd, meetingHoursStart, meetingHoursEnd, isOnlineMeeting, maxSuggestions, timeZone } = parsed;
+  
+  logger.info('Tool: find-meeting-times', { 
+    user: getContextUserId(),
+    attendeeCount: attendees.length,
+    durationMinutes,
+    searchWindowStart,
+    searchWindowEnd,
+  });
+  
+  try {
+    // Build the request body for findMeetingTimes
+    const requestBody: Record<string, unknown> = {
+      attendees: attendees.map(a => ({
+        emailAddress: { address: a.email },
+        type: a.type || 'required',
+      })),
+      meetingDuration: `PT${durationMinutes}M`,
+      maxCandidates: maxSuggestions,
+      returnSuggestionReasons: true,
+    };
+    
+    // Build time constraint
+    const timeConstraint: Record<string, unknown> = {
+      activityDomain: 'work',
+      timeSlots: [{
+        start: {
+          dateTime: searchWindowStart,
+          timeZone: timeZone || 'UTC',
+        },
+        end: {
+          dateTime: searchWindowEnd,
+          timeZone: timeZone || 'UTC',
+        },
+      }],
+    };
+    
+    requestBody.timeConstraint = timeConstraint;
+    
+    // Add meeting hours constraint if specified
+    if (meetingHoursStart && meetingHoursEnd) {
+      requestBody.meetingHoursStart = meetingHoursStart;
+      requestBody.meetingHoursEnd = meetingHoursEnd;
+    }
+    
+    // Add location constraint for online meeting
+    if (isOnlineMeeting) {
+      requestBody.isOrganizerOptional = false;
+      requestBody.locationConstraint = {
+        isRequired: false,
+        suggestLocation: false,
+        locations: [{
+          displayName: 'Microsoft Teams Meeting',
+          locationUri: '',
+        }],
+      };
+    }
+    
+    const response = await graphRequest('/me/findMeetingTimes', {
+      method: 'POST',
+      body: requestBody,
+      headers: timeZone ? { 'Prefer': `outlook.timezone="${timeZone}"` } : undefined,
+    });
+    
     return handleGraphResponse(response);
   } catch (error) {
     return formatErrorResponse(error);
@@ -320,7 +617,7 @@ async function deleteCalendarEvent(params: Record<string, unknown>) {
 export const calendarToolDefinitions = [
   {
     name: 'list-calendars',
-    description: 'List all calendars for the authenticated user',
+    description: 'List all calendars for the authenticated user. Returns calendar IDs that can be used with other calendar tools.',
     readOnly: true,
     requiredScopes: ['Calendars.Read'],
     inputSchema: {
@@ -331,7 +628,18 @@ export const calendarToolDefinitions = [
   },
   {
     name: 'list-calendar-events',
-    description: 'List calendar events from a calendar. Defaults to primary calendar.',
+    description: `List calendar events with simple date range filtering. Uses calendarView for proper recurring event expansion.
+
+Use this tool for:
+- Browsing upcoming events chronologically
+- Getting events in a specific date range
+- Simple event listing without complex filters
+
+For searching by content/organizer/location/attendees, use search-calendar-events instead.
+
+Examples:
+- Get events this week: { "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
+- Get next 20 events: { "top": 20 }`,
     readOnly: true,
     requiredScopes: ['Calendars.Read'],
     inputSchema: {
@@ -339,7 +647,15 @@ export const calendarToolDefinitions = [
       properties: {
         calendarId: {
           type: 'string',
-          description: 'Calendar ID (default: primary calendar)',
+          description: 'Calendar ID (default: primary calendar). Use list-calendars to get IDs.',
+        },
+        startAfter: {
+          type: 'string',
+          description: 'Events starting after this date/time (ISO 8601). Example: "2026-01-20T00:00:00Z"',
+        },
+        startBefore: {
+          type: 'string',
+          description: 'Events starting before this date/time (ISO 8601). Example: "2026-01-27T23:59:59Z"',
         },
         top: {
           type: 'number',
@@ -349,10 +665,6 @@ export const calendarToolDefinitions = [
           type: 'number',
           description: 'Number of events to skip for pagination',
         },
-        filter: {
-          type: 'string',
-          description: 'OData filter expression',
-        },
         orderBy: {
           type: 'string',
           description: 'Sort order (default: start/dateTime)',
@@ -360,6 +672,171 @@ export const calendarToolDefinitions = [
       },
     },
     handler: listCalendarEvents,
+  },
+  {
+    name: 'search-calendar-events',
+    description: `Search calendar events with advanced filtering by subject, organizer, attendees, location, and more.
+
+Use this tool for:
+- Keyword search in event subject/body/location
+- Filtering by organizer (email or name)
+- Filtering by attendees
+- Finding only Teams/online meetings
+- Finding all-day events
+
+For simple date range listing, use list-calendar-events instead.
+
+Examples:
+- Find meetings about budget: { "query": "budget review", "startAfter": "2026-01-01T00:00:00Z" }
+- Find meetings organized by Alice: { "organizerEmail": "alice@company.com" }
+- Find online meetings: { "isOnlineMeeting": true, "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
+- Find meetings with specific attendee: { "attendees": ["bob@company.com"] }
+- Find meetings at specific location: { "location": "Conference Room A" }`,
+    readOnly: true,
+    requiredScopes: ['Calendars.Read'],
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Free-text search (subject, body, location)',
+        },
+        subject: {
+          type: 'string',
+          description: 'Filter by subject containing this text',
+        },
+        organizerEmail: {
+          type: 'string',
+          description: 'Filter by organizer email address. Example: "alice@company.com"',
+        },
+        organizerName: {
+          type: 'string',
+          description: 'Filter by organizer name containing this text',
+        },
+        attendees: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter by attendee email addresses. Example: ["bob@company.com", "carol@company.com"]',
+        },
+        location: {
+          type: 'string',
+          description: 'Filter by location name. Example: "Conference Room A"',
+        },
+        isOnlineMeeting: {
+          type: 'boolean',
+          description: 'Filter for Teams/online meetings only (true) or in-person only (false)',
+        },
+        isAllDay: {
+          type: 'boolean',
+          description: 'Filter for all-day events only (true) or timed events only (false)',
+        },
+        startAfter: {
+          type: 'string',
+          description: 'Events starting after this date/time (ISO 8601). Example: "2026-01-20T00:00:00Z"',
+        },
+        startBefore: {
+          type: 'string',
+          description: 'Events starting before this date/time (ISO 8601). Example: "2026-01-27T23:59:59Z"',
+        },
+        top: {
+          type: 'number',
+          description: 'Maximum number of events to return (default: 25)',
+        },
+      },
+    },
+    handler: searchCalendarEvents,
+  },
+  {
+    name: 'find-meeting-times',
+    description: `Find available meeting times when all specified attendees are free. Uses Microsoft's scheduling algorithm to suggest optimal time slots.
+
+This is the key tool for scheduling meetings with multiple people. It checks everyone's free/busy status (same access as Outlook) and returns ranked suggestions.
+
+Returns a list of suggested time slots with:
+- confidence score (0-100%) based on attendee availability
+- attendee availability status for each slot
+- suggestion reasons
+
+Examples:
+- Find 1-hour slot with Alice next 2 weeks, 9-11am:
+  {
+    "attendees": [{"email": "alice@company.com", "type": "required"}],
+    "durationMinutes": 60,
+    "searchWindowStart": "2026-01-20T00:00:00",
+    "searchWindowEnd": "2026-02-03T23:59:59",
+    "meetingHoursStart": "09:00:00",
+    "meetingHoursEnd": "11:00:00",
+    "timeZone": "Europe/Berlin"
+  }
+
+- Find 30-min Teams meeting with team:
+  {
+    "attendees": [
+      {"email": "alice@company.com", "type": "required"},
+      {"email": "bob@company.com", "type": "required"},
+      {"email": "carol@company.com", "type": "optional"}
+    ],
+    "durationMinutes": 30,
+    "searchWindowStart": "2026-01-20T00:00:00",
+    "searchWindowEnd": "2026-01-24T23:59:59",
+    "isOnlineMeeting": true,
+    "maxSuggestions": 5
+  }
+
+After finding times, use create-calendar-event to book the meeting.`,
+    readOnly: true,
+    requiredScopes: ['Calendars.Read.Shared'],
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        attendees: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              email: { type: 'string', description: 'Attendee email address' },
+              type: { type: 'string', enum: ['required', 'optional'], description: 'required = must attend, optional = nice to have' },
+            },
+            required: ['email'],
+          },
+          description: 'List of attendees with their email and type (required/optional)',
+        },
+        durationMinutes: {
+          type: 'number',
+          description: 'Meeting duration in minutes. Common values: 15, 30, 45, 60, 90, 120',
+        },
+        searchWindowStart: {
+          type: 'string',
+          description: 'Start of search window (ISO 8601). Example: "2026-01-20T00:00:00"',
+        },
+        searchWindowEnd: {
+          type: 'string',
+          description: 'End of search window (ISO 8601). Example: "2026-02-03T23:59:59"',
+        },
+        meetingHoursStart: {
+          type: 'string',
+          description: 'Earliest time of day for meetings (HH:MM:SS). Example: "09:00:00" for 9 AM',
+        },
+        meetingHoursEnd: {
+          type: 'string',
+          description: 'Latest time of day for meetings (HH:MM:SS). Example: "17:00:00" for 5 PM',
+        },
+        isOnlineMeeting: {
+          type: 'boolean',
+          description: 'Suggest as Teams/online meeting (default: false)',
+        },
+        maxSuggestions: {
+          type: 'number',
+          description: 'Maximum number of time slot suggestions to return (default: 10, max: 50)',
+        },
+        timeZone: {
+          type: 'string',
+          description: 'Time zone for the constraints. Example: "Europe/Berlin", "America/New_York", "UTC"',
+        },
+      },
+      required: ['attendees', 'searchWindowStart', 'searchWindowEnd'],
+    },
+    handler: findMeetingTimes,
   },
   {
     name: 'get-calendar-event',
