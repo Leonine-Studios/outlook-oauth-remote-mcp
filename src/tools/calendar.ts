@@ -851,8 +851,10 @@ MEETING HOURS CONSTRAINT:
 
 ORGANIZER AVAILABILITY:
 - By default, suggestions require the organizer (you) to be free
-- Set isOrganizerOptional=true to find times even when you have conflicts
-- Useful for scheduling meetings for others or finding times when you might decline existing meetings
+- If response contains emptySuggestionsReason="OrganizerUnavailable", it means YOU are busy during the entire search window
+- DO NOT silently retry with isOrganizerOptional=true
+- Instead, tell the user: "I couldn't find times when you're available in this window. Would you like me to find times when the other attendees are free, even if you have conflicts?"
+- Only set isOrganizerOptional=true if user explicitly confirms they want to see options despite their conflicts
 
 Returns a list of suggested time slots with:
 - confidence score (0-100%) based on attendee availability
@@ -929,7 +931,7 @@ After finding times, use create-calendar-event to book the meeting.`,
         },
         isOrganizerOptional: {
           type: 'boolean',
-          description: 'If true, suggestions can be returned even when the organizer (you) is busy. Useful when you want to find times for others even if you have conflicts. Default: false',
+          description: 'If true, suggestions can be returned even when you are busy. IMPORTANT: Only set to true after asking the user if they want to see times despite their conflicts. Never set this silently. Default: false',
         },
         maxSuggestions: {
           type: 'number',
