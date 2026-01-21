@@ -43,6 +43,7 @@ const findMeetingTimesSchema = z.object({
   meetingHoursStart: z.string().optional(),
   meetingHoursEnd: z.string().optional(),
   isOnlineMeeting: z.boolean().optional().default(false),
+  isOrganizerOptional: z.boolean().optional().default(false),
   maxSuggestions: z.number().min(1).max(50).optional().default(10),
   timeZone: z.string().optional(),
 });
@@ -365,11 +366,32 @@ async function searchCalendarEvents(params: Record<string, unknown>) {
 }
 
 /**
+ * Check if a time (HH:MM:SS or HH:MM) is within meeting hours constraints
+ */
+function isWithinMeetingHours(
+  dateTimeStr: string,
+  meetingHoursStart?: string,
+  meetingHoursEnd?: string
+): boolean {
+  if (!meetingHoursStart || !meetingHoursEnd) return true;
+  
+  // Extract time from ISO datetime (e.g., "2026-01-27T09:00:00" -> "09:00:00")
+  const timeMatch = dateTimeStr.match(/T(\d{2}:\d{2})/);
+  if (!timeMatch) return true;
+  
+  const time = timeMatch[1]; // "HH:MM"
+  const startTime = meetingHoursStart.substring(0, 5); // "HH:MM" from "HH:MM:SS"
+  const endTime = meetingHoursEnd.substring(0, 5);
+  
+  return time >= startTime && time < endTime;
+}
+
+/**
  * Find available meeting times when all attendees are free
  */
 async function findMeetingTimes(params: Record<string, unknown>) {
   const parsed = findMeetingTimesSchema.parse(params);
-  const { attendees, durationMinutes, searchWindowStart, searchWindowEnd, meetingHoursStart, meetingHoursEnd, isOnlineMeeting, maxSuggestions, timeZone } = parsed;
+  const { attendees, durationMinutes, searchWindowStart, searchWindowEnd, meetingHoursStart, meetingHoursEnd, isOnlineMeeting, isOrganizerOptional, maxSuggestions, timeZone } = parsed;
   
   logger.info('Tool: find-meeting-times', { 
     user: getContextUserId(),
@@ -377,6 +399,8 @@ async function findMeetingTimes(params: Record<string, unknown>) {
     durationMinutes,
     searchWindowStart,
     searchWindowEnd,
+    meetingHoursStart,
+    meetingHoursEnd,
   });
   
   try {
@@ -387,8 +411,9 @@ async function findMeetingTimes(params: Record<string, unknown>) {
         type: a.type || 'required',
       })),
       meetingDuration: `PT${durationMinutes}M`,
-      maxCandidates: maxSuggestions,
+      maxCandidates: maxSuggestions ? maxSuggestions * 3 : 30, // Request more to allow for filtering
       returnSuggestionReasons: true,
+      isOrganizerOptional: isOrganizerOptional ?? false,
     };
     
     // Build time constraint
@@ -408,15 +433,8 @@ async function findMeetingTimes(params: Record<string, unknown>) {
     
     requestBody.timeConstraint = timeConstraint;
     
-    // Add meeting hours constraint if specified
-    if (meetingHoursStart && meetingHoursEnd) {
-      requestBody.meetingHoursStart = meetingHoursStart;
-      requestBody.meetingHoursEnd = meetingHoursEnd;
-    }
-    
     // Add location constraint for online meeting
     if (isOnlineMeeting) {
-      requestBody.isOrganizerOptional = false;
       requestBody.locationConstraint = {
         isRequired: false,
         suggestLocation: false,
@@ -432,6 +450,49 @@ async function findMeetingTimes(params: Record<string, unknown>) {
       body: requestBody,
       headers: timeZone ? { 'Prefer': `outlook.timezone="${timeZone}"` } : undefined,
     });
+    
+    // Client-side filtering for meeting hours constraint
+    // Graph API doesn't reliably enforce meetingHoursStart/End, so we filter here
+    if (meetingHoursStart && meetingHoursEnd && response.data) {
+      const data = response.data as {
+        meetingTimeSuggestions?: Array<{
+          meetingTimeSlot?: {
+            start?: { dateTime?: string };
+            end?: { dateTime?: string };
+          };
+        }>;
+        emptySuggestionsReason?: string;
+      };
+      
+      if (data.meetingTimeSuggestions && data.meetingTimeSuggestions.length > 0) {
+        // Filter suggestions to only include those within meeting hours
+        const filteredSuggestions = data.meetingTimeSuggestions.filter(suggestion => {
+          const startTime = suggestion.meetingTimeSlot?.start?.dateTime;
+          if (!startTime) return true;
+          return isWithinMeetingHours(startTime, meetingHoursStart, meetingHoursEnd);
+        });
+        
+        // Limit to requested maxSuggestions
+        const limitedSuggestions = filteredSuggestions.slice(0, maxSuggestions || 10);
+        
+        // Return filtered response
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...data,
+              meetingTimeSuggestions: limitedSuggestions,
+              _filteredByMeetingHours: {
+                original: data.meetingTimeSuggestions.length,
+                filtered: limitedSuggestions.length,
+                meetingHoursStart,
+                meetingHoursEnd,
+              },
+            }, null, 2),
+          }],
+        };
+      }
+    }
     
     return handleGraphResponse(response);
   } catch (error) {
@@ -784,6 +845,15 @@ CRITICAL - EMAIL ADDRESSES REQUIRED:
 - EXTRACT their email addresses from the mail results (look in from/toRecipients fields)
 - THEN call this tool with the extracted email addresses
 
+MEETING HOURS CONSTRAINT:
+- Use meetingHoursStart/meetingHoursEnd to limit suggestions to specific hours (e.g., 9 AM - 5 PM)
+- These constraints are strictly enforced via client-side filtering
+
+ORGANIZER AVAILABILITY:
+- By default, suggestions require the organizer (you) to be free
+- Set isOrganizerOptional=true to find times even when you have conflicts
+- Useful for scheduling meetings for others or finding times when you might decline existing meetings
+
 Returns a list of suggested time slots with:
 - confidence score (0-100%) based on attendee availability
 - attendee availability status for each slot
@@ -856,6 +926,10 @@ After finding times, use create-calendar-event to book the meeting.`,
         isOnlineMeeting: {
           type: 'boolean',
           description: 'Suggest as Teams/online meeting (default: false)',
+        },
+        isOrganizerOptional: {
+          type: 'boolean',
+          description: 'If true, suggestions can be returned even when the organizer (you) is busy. Useful when you want to find times for others even if you have conflicts. Default: false',
         },
         maxSuggestions: {
           type: 'number',
