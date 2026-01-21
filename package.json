@@ -1,7 +1,7 @@
 {
-  "name": "outlook-oauth-remote-mcp",
+  "name": "useful-outlook-mcp",
   "version": "1.0.0",
-  "description": "Minimal MCP server for Outlook with OAuth2 delegated access",
+  "description": "A remote MCP server for Outlook that's actually useful for AI agents",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -15,9 +15,14 @@
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "outlook",
     "oauth",
-    "microsoft-graph"
+    "microsoft-graph",
+    "ai-agent",
+    "email",
+    "calendar",
+    "microsoft-365"
   ],
   "author": "",
   "license": "MIT",
