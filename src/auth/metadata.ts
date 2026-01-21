@@ -5,6 +5,7 @@
  * - RFC 9728: OAuth 2.0 Protected Resource Metadata
  * - RFC 8414: OAuth 2.0 Authorization Server Metadata
  * - RFC 7591: OAuth 2.0 Dynamic Client Registration
+ * - RFC 7009: OAuth 2.0 Token Revocation
  */
 
 import { Request, Response, Router } from 'express';
@@ -81,6 +82,7 @@ router.get('/.well-known/oauth-authorization-server', (req: Request, res: Respon
     authorization_endpoint: `${baseUrl}/authorize`,
     token_endpoint: `${baseUrl}/token`,
     registration_endpoint: `${baseUrl}/register`,
+    revocation_endpoint: `${baseUrl}/revoke`,
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
@@ -295,6 +297,62 @@ router.post('/token', async (req: Request, res: Response) => {
       error_description: 'Token exchange failed',
     });
   }
+});
+
+/**
+ * RFC 7009: OAuth 2.0 Token Revocation
+ * 
+ * This endpoint allows clients to notify the authorization server that a
+ * previously obtained token is no longer needed.
+ * 
+ * Note: Microsoft Entra ID does not provide a standard RFC 7009 revocation endpoint.
+ * Access tokens cannot be revoked (they expire naturally).
+ * Refresh tokens can be invalidated by revoking sign-in sessions via Graph API,
+ * but that requires a valid access token and revokes ALL sessions.
+ * 
+ * Per RFC 7009, this endpoint returns 200 OK regardless of whether the token
+ * was valid, invalid, or already revoked - the outcome is the same: the token
+ * is no longer usable by the client.
+ */
+router.post('/revoke', (req: Request, res: Response) => {
+  const body = (req.body || {}) as {
+    token?: string;
+    token_type_hint?: 'access_token' | 'refresh_token';
+  };
+  
+  if (!body.token) {
+    res.status(400).json({
+      error: 'invalid_request',
+      error_description: 'token parameter is required',
+    });
+    return;
+  }
+  
+  const tokenTypeHint = body.token_type_hint || 'access_token';
+  
+  // Log the revocation attempt (truncate token for security)
+  const tokenPreview = body.token.substring(0, 10) + '...' + body.token.substring(body.token.length - 5);
+  logger.info('Token revocation requested', {
+    token_type_hint: tokenTypeHint,
+    token_preview: tokenPreview,
+  });
+  
+  // Per RFC 7009 Section 2.2:
+  // "The authorization server responds with HTTP status code 200 if the token
+  // has been revoked successfully or if the client submitted an invalid token."
+  // 
+  // Since Microsoft Entra ID doesn't support direct token revocation:
+  // - Access tokens: Cannot be revoked, but will expire naturally
+  // - Refresh tokens: Client should discard them; without a valid access token
+  //   we cannot call Graph API to revoke sessions
+  //
+  // We return 200 OK to indicate the client should consider the token revoked
+  // on their end.
+  
+  logger.debug('Token revocation acknowledged', { token_type_hint: tokenTypeHint });
+  
+  // Return empty 200 response as per RFC 7009
+  res.status(200).send();
 });
 
 export default router;

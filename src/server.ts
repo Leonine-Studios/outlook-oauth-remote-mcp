@@ -82,6 +82,7 @@ export function createApp() {
         health: '/health',
         oauth_protected_resource: '/.well-known/oauth-protected-resource',
         oauth_authorization_server: '/.well-known/oauth-authorization-server',
+        revoke: '/revoke',
       },
     });
   });
