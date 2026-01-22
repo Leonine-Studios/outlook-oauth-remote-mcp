@@ -74,6 +74,23 @@ const createCalendarEventSchema = z.object({
   calendarId: z.string().optional(),
 });
 
+const createDraftCalendarEventSchema = z.object({
+  subject: z.string(),
+  start: z.string(),
+  end: z.string(),
+  timeZone: z.string().optional().default('UTC'),
+  body: z.string().optional(),
+  bodyType: z.enum(['html', 'text']).optional().default('text'),
+  location: z.string().optional(),
+  attendees: z.array(z.object({
+    email: z.string(),
+    type: z.enum(['required', 'optional']).optional().default('required'),
+  })).optional(),
+  isAllDay: z.boolean().optional().default(false),
+  reminderMinutesBeforeStart: z.number().optional(),
+  calendarId: z.string().optional(),
+});
+
 const updateCalendarEventSchema = z.object({
   eventId: z.string(),
   subject: z.string().optional(),
@@ -573,6 +590,68 @@ async function createCalendarEvent(params: Record<string, unknown>) {
 }
 
 /**
+ * Create a draft calendar event (without sending meeting invitations)
+ */
+async function createDraftCalendarEvent(params: Record<string, unknown>) {
+  const { 
+    subject, start, end, timeZone, body, bodyType, 
+    location, attendees, isAllDay, reminderMinutesBeforeStart, calendarId 
+  } = createDraftCalendarEventSchema.parse(params);
+  
+  try {
+    const event: Record<string, unknown> = {
+      subject,
+      start: {
+        dateTime: start,
+        timeZone: timeZone || 'UTC',
+      },
+      end: {
+        dateTime: end,
+        timeZone: timeZone || 'UTC',
+      },
+      isAllDay,
+      isDraft: true,
+    };
+    
+    if (body) {
+      event.body = {
+        contentType: bodyType === 'html' ? 'HTML' : 'Text',
+        content: body,
+      };
+    }
+    
+    if (location) {
+      event.location = { displayName: location };
+    }
+    
+    if (attendees?.length) {
+      event.attendees = attendees.map(a => ({
+        emailAddress: { address: a.email },
+        type: a.type || 'required',
+      }));
+    }
+    
+    if (reminderMinutesBeforeStart !== undefined) {
+      event.reminderMinutesBeforeStart = reminderMinutesBeforeStart;
+      event.isReminderOn = true;
+    }
+    
+    const endpoint = calendarId 
+      ? `/me/calendars/${calendarId}/events`
+      : '/me/events';
+    
+    const response = await graphRequest(endpoint, {
+      method: 'POST',
+      body: event,
+    });
+    
+    return handleGraphResponse(response);
+  } catch (error) {
+    return formatErrorResponse(error);
+  }
+}
+
+/**
  * Update a calendar event
  */
 async function updateCalendarEvent(params: Record<string, unknown>) {
@@ -1000,6 +1079,83 @@ After finding times, use create-calendar-event to book the meeting.`,
       required: ['subject', 'start', 'end'],
     },
     handler: createCalendarEvent,
+  },
+  {
+    name: 'create-draft-calendar-event',
+    description: `Create a calendar event draft without sending meeting invitations to attendees. The event is saved to your calendar but attendees are NOT notified until you send the meeting from Outlook.
+
+Use this tool when:
+- You want to prepare a meeting for user review before sending invitations
+- You need to create an event with attendees but delay sending invitations
+- You want to propose a meeting time for the user to review first
+
+The draft event will appear on your calendar with a "[Draft]" indicator. To send invitations:
+- Open the event in Outlook and click "Send"
+- Or use update-calendar-event to modify and the user can send from Outlook
+
+This is the safer option for LLM agents - create drafts and let users review before sending.`,
+    readOnly: false,
+    requiredScopes: ['Calendars.ReadWrite'],
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        subject: {
+          type: 'string',
+          description: 'Event title',
+        },
+        start: {
+          type: 'string',
+          description: 'Start time (ISO 8601 format)',
+        },
+        end: {
+          type: 'string',
+          description: 'End time (ISO 8601 format)',
+        },
+        timeZone: {
+          type: 'string',
+          description: 'Time zone (default: UTC)',
+        },
+        body: {
+          type: 'string',
+          description: 'Event description',
+        },
+        bodyType: {
+          type: 'string',
+          enum: ['html', 'text'],
+          description: 'Body content type (default: text)',
+        },
+        location: {
+          type: 'string',
+          description: 'Location name',
+        },
+        isAllDay: {
+          type: 'boolean',
+          description: 'Is this an all-day event',
+        },
+        reminderMinutesBeforeStart: {
+          type: 'number',
+          description: 'Reminder minutes before event',
+        },
+        calendarId: {
+          type: 'string',
+          description: 'Calendar ID (default: primary calendar)',
+        },
+        attendees: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              email: { type: 'string', description: 'Attendee email address (e.g., "john@company.com")' },
+              type: { type: 'string', enum: ['required', 'optional'], description: 'Attendance type (default: required)' },
+            },
+            required: ['email'],
+          },
+          description: 'List of attendees to invite. Invitations are NOT sent until the meeting is published from Outlook.',
+        },
+      },
+      required: ['subject', 'start', 'end'],
+    },
+    handler: createDraftCalendarEvent,
   },
   {
     name: 'update-calendar-event',
