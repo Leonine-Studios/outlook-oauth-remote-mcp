@@ -29,9 +29,9 @@ export function createApp() {
   // Trust proxy for correct protocol detection behind reverse proxies
   app.set('trust proxy', true);
   
-  // Parse request bodies
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  // Parse request bodies with size limits to prevent DoS
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   
   // CORS configuration
   app.use((req, res, next) => {

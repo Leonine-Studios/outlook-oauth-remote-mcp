@@ -12,6 +12,7 @@ import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
 import { getConfig, getAuthEndpoints } from '../config.js';
 import { getRequiredScopes } from '../tools/index.js';
+import { registrationRateLimitMiddleware } from '../middleware/rate-limiter.js';
 import logger from '../utils/logger.js';
 
 const router = Router();
@@ -100,7 +101,7 @@ router.get('/.well-known/oauth-authorization-server', (req: Request, res: Respon
  * the actual authentication - we still use our Azure AD app's credentials
  * for the Microsoft OAuth flow.
  */
-router.post('/register', (req: Request, res: Response) => {
+router.post('/register', registrationRateLimitMiddleware(), (req: Request, res: Response) => {
   const body = req.body as {
     client_name?: string;
     redirect_uris?: string[];
@@ -330,11 +331,9 @@ router.post('/revoke', (req: Request, res: Response) => {
   
   const tokenTypeHint = body.token_type_hint || 'access_token';
   
-  // Log the revocation attempt (truncate token for security)
-  const tokenPreview = body.token.substring(0, 10) + '...' + body.token.substring(body.token.length - 5);
-  logger.info('Token revocation requested', {
+  // Log the revocation attempt (no sensitive data)
+  logger.debug('Token revocation requested', {
     token_type_hint: tokenTypeHint,
-    token_preview: tokenPreview,
   });
   
   // Per RFC 7009 Section 2.2:
@@ -351,8 +350,12 @@ router.post('/revoke', (req: Request, res: Response) => {
   
   logger.debug('Token revocation acknowledged', { token_type_hint: tokenTypeHint });
   
-  // Return empty 200 response as per RFC 7009
-  res.status(200).send();
+  // Return informative response (RFC 7009 allows empty 200, but this is more helpful)
+  res.status(200).json({
+    acknowledged: true,
+    token_type_hint: tokenTypeHint,
+    message: 'Token revocation acknowledged. Note: Microsoft tokens cannot be programmatically revoked server-side and remain valid until expiry. Clients should delete stored tokens.',
+  });
 });
 
 export default router;

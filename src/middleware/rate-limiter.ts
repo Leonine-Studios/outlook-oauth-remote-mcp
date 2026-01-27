@@ -192,3 +192,70 @@ export function getRateLimitStats(): {
     totalTrackedRequests,
   };
 }
+
+/**
+ * IP-based rate limit store for registration endpoint
+ * Separate from user rate limits to prevent abuse of /register
+ */
+const registrationLimitStore = new Map<string, RateLimitEntry>();
+
+/** Registration rate limit: 5 requests per minute per IP */
+const REGISTRATION_LIMIT = 5;
+const REGISTRATION_WINDOW_MS = 60 * 1000;
+
+/**
+ * Rate limiting middleware for /register endpoint
+ * 
+ * Uses IP-based limiting (5 requests/minute) to prevent abuse
+ * of dynamic client registration.
+ */
+export function registrationRateLimitMiddleware() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const windowStart = now - REGISTRATION_WINDOW_MS;
+    
+    // Get or create entry for this IP
+    let entry = registrationLimitStore.get(ip);
+    if (!entry) {
+      entry = { requests: [], lastAccess: now };
+      registrationLimitStore.set(ip, entry);
+    }
+    
+    // Remove requests outside the current window
+    entry.requests = entry.requests.filter(timestamp => timestamp > windowStart);
+    entry.lastAccess = now;
+    
+    const remaining = Math.max(0, REGISTRATION_LIMIT - entry.requests.length);
+    const isLimited = entry.requests.length >= REGISTRATION_LIMIT;
+    
+    // Calculate reset time
+    let resetMs = REGISTRATION_WINDOW_MS;
+    if (entry.requests.length > 0) {
+      const oldestRequest = Math.min(...entry.requests);
+      resetMs = Math.max(0, (oldestRequest + REGISTRATION_WINDOW_MS) - now);
+    }
+    
+    // Set rate limit headers
+    res.setHeader('X-RateLimit-Limit', REGISTRATION_LIMIT);
+    res.setHeader('X-RateLimit-Remaining', remaining);
+    res.setHeader('X-RateLimit-Reset', Math.ceil(resetMs / 1000));
+    
+    if (isLimited) {
+      logger.warn('Registration rate limit exceeded', { ip });
+      
+      res.setHeader('Retry-After', Math.ceil(resetMs / 1000));
+      res.status(429).json({
+        error: 'rate_limit_exceeded',
+        error_description: 'Too many registration requests. Please try again later.',
+        retry_after_seconds: Math.ceil(resetMs / 1000),
+      });
+      return;
+    }
+    
+    // Record this request
+    entry.requests.push(now);
+    
+    next();
+  };
+}
