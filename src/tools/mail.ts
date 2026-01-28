@@ -259,6 +259,22 @@ function formatQueryValue(query: string): string {
 }
 
 /**
+ * Build KQL query for a field that may contain multiple email addresses
+ * Supports comma or semicolon-separated lists
+ * Example: "email1@x.com, email2@x.com" -> "field:email1@x.com AND field:email2@x.com"
+ */
+function buildEmailFieldQuery(field: string, value: string): string {
+  // Split by comma or semicolon, trim whitespace
+  const emails = value.split(/[,;]/).map(e => e.trim()).filter(e => e.length > 0);
+  
+  if (emails.length === 0) return '';
+  if (emails.length === 1) return `${field}:${formatKqlValue(emails[0])}`;
+  
+  // Multiple emails: field:email1 AND field:email2 AND field:email3
+  return emails.map(email => `${field}:${formatKqlValue(email)}`).join(' AND ');
+}
+
+/**
  * Build KQL search query from parameters
  * 
  * Note: KQL (Keyword Query Language) requires quoting values with special characters
@@ -285,19 +301,43 @@ function buildMailSearchQuery(params: {
     parts.push(formatQueryValue(params.query));
   }
   
-  // Add KQL property filters - formatKqlValue handles quoting and sanitization
-  if (params.from) parts.push(`from:${formatKqlValue(params.from)}`);
-  if (params.to) parts.push(`to:${formatKqlValue(params.to)}`);
-  if (params.cc) parts.push(`cc:${formatKqlValue(params.cc)}`);
-  if (params.bcc) parts.push(`bcc:${formatKqlValue(params.bcc)}`);
-  if (params.participants) parts.push(`participants:${formatKqlValue(params.participants)}`);
+  // Add KQL property filters for email fields (support multiple emails with AND)
+  if (params.from) parts.push(buildEmailFieldQuery('from', params.from));
+  if (params.to) parts.push(buildEmailFieldQuery('to', params.to));
+  if (params.cc) parts.push(buildEmailFieldQuery('cc', params.cc));
+  if (params.bcc) parts.push(buildEmailFieldQuery('bcc', params.bcc));
+  if (params.participants) parts.push(buildEmailFieldQuery('participants', params.participants));
   if (params.subject) parts.push(`subject:${formatKqlValue(params.subject)}`);
   if (params.body) parts.push(`body:${formatKqlValue(params.body)}`);
   if (params.attachment) parts.push(`attachment:${formatKqlValue(params.attachment)}`);
   if (params.hasAttachments !== undefined) parts.push(`hasAttachments:${params.hasAttachments}`);
   if (params.importance) parts.push(`importance:${params.importance}`);
-  if (params.received) parts.push(`received:${params.received}`);
+  if (params.received) {
+    const val = params.received.trim();
+    // KQL date syntax: use colon for ranges/keywords (received:2023-01-01..2023-12-31, received:today)
+    // but NO colon for comparison operators (received>=2023-01-01)
+    if (/^[<>=]/.test(val)) {
+      parts.push(`received${val}`);
+    } else {
+      parts.push(`received:${val}`);
+    }
+  }
   
+  // KQL joining logic:
+  // - Free-text query + property filters need explicit AND
+  // - Multiple email filters generate internal ANDs, so join all with AND for consistency
+  // - Check if any part contains AND (means multiple emails were specified)
+  const hasComplexFilters = parts.some(part => part.includes(' AND '));
+  
+  if (params.query && parts.length > 1) {
+    // Free-text query with property filters: join with AND
+    return parts.join(' AND ');
+  } else if (hasComplexFilters) {
+    // Multiple emails specified: join all with AND for proper precedence
+    return parts.join(' AND ');
+  }
+  
+  // Simple property filters can be space-separated
   return parts.join(' ');
 }
 
@@ -841,6 +881,16 @@ CRITICAL - FINDING EMAILS BY PERSON NAME:
 - To find someone's email address when you only have their NAME: Use "query" parameter with the person's name
 - Example: To find John Doe's email, use { "query": "John Doe", "top": 5 }, then extract email from results
 
+WORKFLOW - FINDING EMAILS "BETWEEN" TWO PEOPLE (e.g., "emails between me and John Doe about project X"):
+1. First search: Find John Doe's email address using { "query": "John Doe", "top": 5 }
+2. Extract email (e.g., john.doe@company.com) from the results
+3. Second search: Use { "query": "project X", "participants": "john.doe@company.com, your.email@company.com", "received": ">=2025-10-01" }
+4. Note: The "participants" filter includes messages where that person is in from/to/cc/bcc
+5. IMPORTANT: You can provide MULTIPLE emails separated by commas to require ALL of them:
+   - "participants": "email1@x.com, email2@x.com" finds messages where BOTH are participants
+   - Same works for from/to/cc/bcc fields
+   - This filters at the API level (efficient) instead of post-processing results
+
 GRAPH API QUIRKS:
 - Cannot combine with sorting ($orderby) - results are ranked by relevance
 - $search does not support $skip pagination
@@ -855,6 +905,7 @@ Examples:
 - Search by recipient: { "to": "alice@company.com", "subject": "project" }
 - Search with date: { "query": "quarterly report", "received": ">=2026-01-01" }
 - Search by attachment: { "attachment": "budget.xlsx" }
+- Search between two people: { "query": "project", "participants": "alice@x.com, bob@x.com", "received": ">=2026-01-01" }
 - Search in folder: { "folderId": "xxx", "from": "alice" }`,
     readOnly: true,
     requiredScopes: ['Mail.Read'],
@@ -867,23 +918,23 @@ Examples:
         },
         from: {
           type: 'string',
-          description: 'Sender EMAIL ADDRESS (names are unreliable). Example: "john@company.com". If you only have a name, use "query" parameter instead.',
+          description: 'Sender EMAIL ADDRESS (names are unreliable). Example: "john@company.com". Supports multiple emails separated by commas to require ALL: "email1@x.com, email2@x.com". If you only have a name, use "query" parameter instead.',
         },
         to: {
           type: 'string',
-          description: 'Recipient EMAIL ADDRESS in TO field (names are unreliable). Example: "alice@company.com". If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
+          description: 'Recipient EMAIL ADDRESS in TO field (names are unreliable). Example: "alice@company.com". Supports multiple emails separated by commas to require ALL. If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
         },
         cc: {
           type: 'string',
-          description: 'Recipient EMAIL ADDRESS in CC field (names are unreliable). If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
+          description: 'Recipient EMAIL ADDRESS in CC field (names are unreliable). Supports multiple emails separated by commas to require ALL. If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
         },
         bcc: {
           type: 'string',
-          description: 'Recipient EMAIL ADDRESS in BCC field (names are unreliable). If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
+          description: 'Recipient EMAIL ADDRESS in BCC field (names are unreliable). Supports multiple emails separated by commas to require ALL. If you only have a name, use "query" parameter instead. Not supported in folder-specific search.',
         },
         participants: {
           type: 'string',
-          description: 'Any participant EMAIL ADDRESS (from/to/cc/bcc combined). Names are unreliable - use "query" parameter instead. Not supported in folder-specific search.',
+          description: 'Any participant EMAIL ADDRESS (from/to/cc/bcc combined). Example: "john@x.com, alice@x.com" requires BOTH in the conversation. Supports multiple comma-separated emails to filter at API level. Names are unreliable - use "query" parameter instead. Not supported in folder-specific search.',
         },
         subject: {
           type: 'string',

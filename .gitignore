@@ -28,3 +28,4 @@ coverage/
 
 # TypeScript cache
 *.tsbuildinfo
+examples.txt
