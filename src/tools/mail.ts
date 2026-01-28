@@ -816,25 +816,18 @@ To find a subfolder like "Done" under Inbox:
     name: 'list-mail-messages',
     description: `List and filter mail messages from a folder with structured filters. Defaults to Inbox.
 
-Use this tool for:
-- Browsing recent emails chronologically
-- Filtering by sender email address (uses partial match, not exact)
-- Filtering by date range (receivedAfter/receivedBefore)
-- Filtering by read/unread status
-- Filtering by importance or attachments
+Use this for: chronological browsing, filtering by sender/date/read status/importance/attachments.
+For full-text search in body/subject or filtering by TO/CC/BCC recipients, use search-mail instead.
 
-For full-text search in body/subject or searching by TO/CC/BCC recipients, use search-mail instead.
-
-GRAPH API QUIRKS:
-- senderEmail uses startswith() internally (partial match) because Graph API's exact match is unreliable
-- Cannot filter by to/cc/bcc recipients with this tool - use search-mail instead
-- Avoid running many calls in parallel - Graph may return MailboxConcurrency errors
+Filtering notes:
+- senderEmail uses partial match (not exact)
+- Cannot filter by to/cc/bcc recipients - use search-mail for that
 
 Examples:
-- Get unread emails: { "isRead": false }
-- Get emails from specific sender: { "senderEmail": "john@company.com" }
-- Get emails from last week: { "receivedAfter": "2026-01-13T00:00:00Z" }
-- Get important emails with attachments: { "importance": "high", "hasAttachments": true }`,
+- Unread emails: { "isRead": false }
+- From sender: { "senderEmail": "john@company.com" }
+- Last week: { "receivedAfter": "2026-01-13T00:00:00Z" }
+- Important with attachments: { "importance": "high", "hasAttachments": true }`,
     readOnly: true,
     requiredScopes: ['Mail.Read'],
     inputSchema: {
@@ -887,48 +880,23 @@ Examples:
   },
   {
     name: 'search-mail',
-    description: `Search mail messages using full-text search (KQL). Searches across body, subject, and attachments.
+    description: `Search mail using full-text search. Searches body, subject, attachments. Use this for text search and filtering by TO/CC/BCC. For simple filters (sender, date, read/unread), use list-mail-messages instead.
 
-Use this tool for:
-- Full-text search in email body or attachments
-- Searching by TO/CC/BCC recipients (not possible with list-mail-messages)
-- Keyword queries across multiple fields
-- Finding emails by attachment filename
-- Searching within a specific folder (with limitations - see folderId)
+EMAIL ADDRESSES REQUIRED:
+- from/to/cc/bcc/participants expect EMAIL ADDRESSES (names don't work reliably)
+- If you only have a name: First call with {"query": "John Doe", "top": 5} to find their email, extract it from results, then search again
+- Multiple comma-separated emails require ALL to match: {"participants": "alice@x.com, bob@x.com"}
 
-For structured filtering (sender, date ranges, read/unread), use list-mail-messages instead.
-
-CRITICAL - FINDING EMAILS BY PERSON NAME:
-- from/to/cc/bcc/participants parameters expect EMAIL ADDRESSES (names are unreliable)
-- To find someone's email address when you only have their NAME: Use "query" parameter with the person's name
-- Example: To find John Doe's email, use { "query": "John Doe", "top": 5 }, then extract email from results
-
-WORKFLOW - FINDING EMAILS "BETWEEN" TWO PEOPLE (e.g., "emails between me and John Doe about project X"):
-1. First search: Find John Doe's email address using { "query": "John Doe", "top": 5 }
-2. Extract email (e.g., john.doe@company.com) from the results
-3. Second search: Use { "query": "project X", "participants": "john.doe@company.com, your.email@company.com", "received": ">=2025-10-01" }
-4. Note: The "participants" filter includes messages where that person is in from/to/cc/bcc
-5. IMPORTANT: You can provide MULTIPLE emails separated by commas to require ALL of them:
-   - "participants": "email1@x.com, email2@x.com" finds messages where BOTH are participants
-   - Same works for from/to/cc/bcc fields
-   - This filters at the API level (efficient) instead of post-processing results
-
-GRAPH API QUIRKS:
-- Cannot combine with sorting ($orderby) - results are ranked by relevance
-- $search does not support $skip pagination
-- When folderId is set, only limited filters work (from, subject, hasAttachments, importance, received)
-- Search results may be limited to ~1000 items
-- Avoid running many calls in parallel - Graph may return MailboxConcurrency errors
+Folder search limitations:
+- When folderId is set, only from/subject/hasAttachments/importance/received work (no query/body/attachment/to/cc/bcc/participants)
 
 Examples:
-- Search for topic: { "query": "brainstorming session" }
-- Find person's email: { "query": "John Doe", "top": 5 }
-- Search from specific sender: { "from": "john@company.com", "query": "meeting notes" }
-- Search by recipient: { "to": "alice@company.com", "subject": "project" }
-- Search with date: { "query": "quarterly report", "received": ">=2026-01-01" }
-- Search by attachment: { "attachment": "budget.xlsx" }
-- Search between two people: { "query": "project", "participants": "alice@x.com, bob@x.com", "received": ">=2026-01-01" }
-- Search in folder: { "folderId": "xxx", "from": "alice" }`,
+- Find person's email: {"query": "John Doe", "top": 5}
+- From sender: {"from": "john@company.com", "query": "project"}
+- By recipients: {"to": "alice@company.com", "subject": "budget"}
+- Between two people: {"query": "project", "participants": "alice@x.com, bob@x.com"}
+- By attachment: {"attachment": "report.pdf"}
+- Folder search: {"folderId": "xxx", "from": "alice@company.com"}`,
     readOnly: true,
     requiredScopes: ['Mail.Read'],
     inputSchema: {
@@ -1039,17 +1007,12 @@ Use list-mail-messages or search-mail first to find message IDs and preview cont
         },
         body: {
           type: 'string',
-          description: `Email body content in HTML format (default) or plain text.
+          description: `Email body content in HTML (default) or plain text.
 
-FORMATTING GUIDELINES for professional emails (when bodyType is "html"):
-- Use semantic HTML: <p> for paragraphs, <ul>/<li> for bullet lists, <strong> for emphasis
-- Font: Let Outlook use its default (Aptos/Calibri 12pt) - don't override with custom styles
-- IMPORTANT: Newline characters (\\n) do NOT render in HTML - use <p> tags or <br> instead
-- For section headers: use <strong> on its own line (avoid <h1>/<h2> which render oversized)
-- Keep styling minimal - no custom margins, padding, or line-height
-- Don't wrap in <html><body> tags - Outlook adds these automatically
-
-For plain text with automatic line breaks, set bodyType to "text" instead.`,
+HTML formatting (bodyType="html"):
+- Use semantic HTML: <p> for paragraphs, <ul>/<li> for lists, <strong> for emphasis
+- IMPORTANT: \\n does NOT work in HTML - use <p> or <br> tags instead
+- Use bodyType="text" for plain text where \\n line breaks work automatically`,
         },
         bodyType: {
           type: 'string',
@@ -1137,17 +1100,12 @@ For plain text with automatic line breaks, set bodyType to "text" instead.`,
         },
         body: {
           type: 'string',
-          description: `Email body content in HTML format (default) or plain text.
+          description: `Email body content in HTML (default) or plain text.
 
-FORMATTING GUIDELINES for professional emails (when bodyType is "html"):
-- Use semantic HTML: <p> for paragraphs, <ul>/<li> for bullet lists, <strong> for emphasis
-- Font: Let Outlook use its default (Aptos/Calibri 12pt) - don't override with custom styles
-- IMPORTANT: Newline characters (\\n) do NOT render in HTML - use <p> tags or <br> instead
-- For section headers: use <strong> on its own line (avoid <h1>/<h2> which render oversized)
-- Keep styling minimal - no custom margins, padding, or line-height
-- Don't wrap in <html><body> tags - Outlook adds these automatically
-
-For plain text with automatic line breaks, set bodyType to "text" instead.`,
+HTML formatting (bodyType="html"):
+- Use semantic HTML: <p> for paragraphs, <ul>/<li> for lists, <strong> for emphasis
+- IMPORTANT: \\n does NOT work in HTML - use <p> or <br> tags instead
+- Use bodyType="text" for plain text where \\n line breaks work automatically`,
         },
         bodyType: {
           type: 'string',

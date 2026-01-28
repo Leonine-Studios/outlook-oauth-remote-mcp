@@ -867,16 +867,12 @@ export const calendarToolDefinitions = [
     name: 'list-calendar-events',
     description: `List calendar events with simple date range filtering. Uses calendarView for proper recurring event expansion.
 
-Use this tool for:
-- Browsing upcoming events chronologically
-- Getting events in a specific date range
-- Simple event listing without complex filters
-
-For searching by content/organizer/location/attendees, use search-calendar-events instead.
+Use this for: chronological browsing, getting events in a date range.
+For filtering by organizer/attendees/content, use search-calendar-events instead.
 
 Examples:
-- Get events this week: { "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
-- Get next 20 events: { "top": 20 }`,
+- Events this week: { "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
+- Next 20 events: { "top": 20 }`,
     readOnly: true,
     requiredScopes: ['Calendars.Read'],
     inputSchema: {
@@ -912,33 +908,23 @@ Examples:
   },
   {
     name: 'search-calendar-events',
-    description: `Search calendar events with advanced filtering by subject, organizer, attendees, online/in-person, and more.
+    description: `Search calendar events with filtering by subject, organizer, attendees, online/in-person, all-day.
 
-CRITICAL - EMAIL ADDRESSES REQUIRED:
-- If user provides PEOPLE NAMES (e.g., "John Doe", "Jane Smith"), names will NOT work
-- FIRST use 'search-mail' with "query" parameter (e.g., {"query": "John Doe", "top": 5}) to find emails
-- EXTRACT their email addresses from the mail results (look in from/toRecipients fields)
-- THEN call this tool with the extracted email addresses
-- DO NOT ask the user for email addresses - look them up yourself using search-mail
+EMAIL ADDRESSES REQUIRED:
+- organizerEmail/attendees expect EMAIL ADDRESSES (names don't work)
+- If you only have names: First use search-mail with {"query": "John Doe", "top": 5} to find emails, extract them from results, then call this tool
+- DO NOT ask user for emails - look them up yourself
 
-Use this tool for:
-- Filtering by subject keywords
-- Filtering by organizer (requires email address)
-- Filtering by attendees (requires email addresses)
-- Finding Teams/online meetings vs in-person meetings (use isOnlineMeeting)
-- Finding all-day events
-
-IMPORTANT:
-- Always use DATE RANGE (startAfter + startBefore) for reliable results
-- Location filtering is not supported - use isOnlineMeeting to filter Teams vs in-person
-- Subject filtering is case-insensitive
+Filtering notes:
+- Always use date range (startAfter + startBefore) for reliable results
+- attendees uses OR logic (matches if any attendee found)
+- Location filtering not supported - use isOnlineMeeting for Teams vs in-person
 
 Examples:
-- Find meetings about Project X: { "subject": "Project X", "startAfter": "2026-01-01T00:00:00Z", "startBefore": "2026-01-31T23:59:59Z" }
-- Find meetings organized by Alice: { "organizerEmail": "alice@company.com", "startAfter": "2026-01-01T00:00:00Z" }
-- Find all Teams meetings this week: { "isOnlineMeeting": true, "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
-- Find meetings with Bob: { "attendees": ["bob@company.com"], "startAfter": "2026-01-01T00:00:00Z" }
-- Find all-day events: { "isAllDay": true, "startAfter": "2026-01-01T00:00:00Z", "startBefore": "2026-01-31T23:59:59Z" }`,
+- By subject: { "subject": "Project X", "startAfter": "2026-01-01T00:00:00Z", "startBefore": "2026-01-31T23:59:59Z" }
+- By organizer: { "organizerEmail": "alice@company.com", "startAfter": "2026-01-01T00:00:00Z" }
+- Teams meetings: { "isOnlineMeeting": true, "startAfter": "2026-01-20T00:00:00Z", "startBefore": "2026-01-27T00:00:00Z" }
+- With attendee: { "attendees": ["bob@company.com"], "startAfter": "2026-01-01T00:00:00Z" }`,
     readOnly: true,
     requiredScopes: ['Calendars.Read'],
     inputSchema: {
@@ -987,59 +973,28 @@ Examples:
   },
   {
     name: 'find-meeting-times',
-    description: `Find available meeting times when all specified attendees are free. Uses Microsoft's scheduling algorithm to suggest optimal time slots.
+    description: `Find available meeting times when attendees are free. Checks everyone's free/busy status and returns ranked suggestions.
 
-This is the key tool for scheduling meetings with multiple people. It checks everyone's free/busy status (same access as Outlook) and returns ranked suggestions.
+EMAIL ADDRESSES REQUIRED:
+- If user provides names: First use search-mail with {"query": "Jane Smith", "top": 5} to find emails, extract from results, then call this tool
+- DO NOT ask user for emails - look them up yourself
 
-CRITICAL - EMAIL ADDRESSES REQUIRED:
-- If user provides PEOPLE NAMES, DO NOT ask the user for emails
-- FIRST use 'search-mail' with "query" parameter (e.g., {"query": "Jane Smith", "top": 5}) to find emails
-- EXTRACT their email addresses from the mail results (look in from/toRecipients fields)
-- THEN call this tool with the extracted email addresses
-
-MEETING HOURS CONSTRAINT:
-- Use meetingHoursStart/meetingHoursEnd to limit suggestions to specific hours (e.g., 9 AM - 5 PM)
-- These constraints are strictly enforced via client-side filtering
-
-ORGANIZER AVAILABILITY:
-- By default, suggestions require the organizer (you) to be free
-- If response contains emptySuggestionsReason="OrganizerUnavailable", it means YOU are busy during the entire search window
+ORGANIZER AVAILABILITY (critical):
+- By default, requires organizer (you) to be free
+- If emptySuggestionsReason="OrganizerUnavailable": YOU are busy during entire window
 - DO NOT silently retry with isOrganizerOptional=true
-- Instead, tell the user: "I couldn't find times when you're available in this window. Would you like me to find times when the other attendees are free, even if you have conflicts?"
-- Only set isOrganizerOptional=true if user explicitly confirms they want to see options despite their conflicts
+- Tell user: "I couldn't find times when you're available. Would you like times when other attendees are free, even if you have conflicts?"
+- Only set isOrganizerOptional=true if user explicitly confirms
 
-Returns a list of suggested time slots with:
-- confidence score (0-100%) based on attendee availability
-- attendee availability status for each slot
-- suggestion reasons
+Parameters:
+- meetingHoursStart/End: Limit to specific hours (e.g., "09:00:00" to "17:00:00")
+- Returns: confidence score, attendee availability, suggestion reasons
 
 Examples:
-- Find 1-hour slot with Alice next 2 weeks, 9-11am:
-  {
-    "attendees": [{"email": "alice@company.com", "type": "required"}],
-    "durationMinutes": 60,
-    "searchWindowStart": "2026-01-20T00:00:00",
-    "searchWindowEnd": "2026-02-03T23:59:59",
-    "meetingHoursStart": "09:00:00",
-    "meetingHoursEnd": "11:00:00",
-    "timeZone": "Europe/Berlin"
-  }
+- 1-hour, 9-11am: {"attendees": [{"email": "alice@company.com", "type": "required"}], "durationMinutes": 60, "searchWindowStart": "2026-01-20T00:00:00", "searchWindowEnd": "2026-02-03T23:59:59", "meetingHoursStart": "09:00:00", "meetingHoursEnd": "11:00:00"}
+- 30-min Teams: {"attendees": [{"email": "alice@company.com"}, {"email": "bob@company.com"}], "durationMinutes": 30, "searchWindowStart": "2026-01-20T00:00:00", "searchWindowEnd": "2026-01-24T23:59:59", "isOnlineMeeting": true}
 
-- Find 30-min Teams meeting with team:
-  {
-    "attendees": [
-      {"email": "alice@company.com", "type": "required"},
-      {"email": "bob@company.com", "type": "required"},
-      {"email": "carol@company.com", "type": "optional"}
-    ],
-    "durationMinutes": 30,
-    "searchWindowStart": "2026-01-20T00:00:00",
-    "searchWindowEnd": "2026-01-24T23:59:59",
-    "isOnlineMeeting": true,
-    "maxSuggestions": 5
-  }
-
-After finding times, use create-calendar-event to book the meeting.`,
+After finding times, use create-calendar-event to book.`,
     readOnly: true,
     requiredScopes: ['Calendars.Read.Shared'],
     inputSchema: {
@@ -1212,18 +1167,11 @@ After finding times, use create-calendar-event to book the meeting.`,
   },
   {
     name: 'create-draft-calendar-event',
-    description: `Create a calendar event draft without sending meeting invitations to attendees. The event is saved to your calendar but attendees are NOT notified until you send the meeting from Outlook.
+    description: `Create a calendar event draft without sending invitations. Event is saved to calendar but attendees NOT notified until user sends from Outlook.
 
-Use this tool when:
-- You want to prepare a meeting for user review before sending invitations
-- You need to create an event with attendees but delay sending invitations
-- You want to propose a meeting time for the user to review first
+Use this to prepare meetings for user review before sending invitations. Safer than create-calendar-event (which sends immediately).
 
-The draft event will appear on your calendar with a "[Draft]" indicator. To send invitations:
-- Open the event in Outlook and click "Send"
-- Or use update-calendar-event to modify and the user can send from Outlook
-
-This is the safer option for LLM agents - create drafts and let users review before sending.`,
+Draft event appears with "[Draft]" indicator. User can send from Outlook or you can use update-calendar-event to modify.`,
     readOnly: false,
     requiredScopes: ['Calendars.ReadWrite'],
     inputSchema: {
