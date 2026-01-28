@@ -98,6 +98,65 @@ export async function graphRequest<T = unknown>(
 }
 
 /**
+ * Remove OData metadata fields to reduce token usage
+ */
+function sanitizeGraphData(data: unknown): unknown {
+  if (Array.isArray(data)) {
+    return data.map(sanitizeGraphData);
+  }
+  
+  if (data && typeof data === 'object') {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      // Skip all @odata.* fields
+      if (!key.startsWith('@odata.')) {
+        cleaned[key] = sanitizeGraphData(value);
+      }
+    }
+    return cleaned;
+  }
+  
+  return data;
+}
+
+/**
+ * Truncate large recipient/attendee lists to reduce token usage
+ */
+function truncateRecipientLists(data: unknown): unknown {
+  if (Array.isArray(data)) {
+    return data.map(truncateRecipientLists);
+  }
+  
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    
+    // Fields to truncate (mail and calendar)
+    const recipientFields = ['toRecipients', 'ccRecipients', 'bccRecipients', 'replyTo', 'attendees'];
+    
+    for (const [key, value] of Object.entries(obj)) {
+      if (recipientFields.includes(key) && Array.isArray(value)) {
+        const MAX_RECIPIENTS = 10;
+        if (value.length > MAX_RECIPIENTS) {
+          // Truncate and add count field
+          result[key] = value.slice(0, MAX_RECIPIENTS);
+          result[`${key}Count`] = value.length;
+          result[`${key}Truncated`] = true;
+        } else {
+          result[key] = truncateRecipientLists(value);
+        }
+      } else {
+        result[key] = truncateRecipientLists(value);
+      }
+    }
+    
+    return result;
+  }
+  
+  return data;
+}
+
+/**
  * Format a successful MCP tool response
  */
 export function formatToolResponse(data: unknown): {
@@ -146,5 +205,8 @@ export function handleGraphResponse<T>(
     );
   }
   
-  return formatToolResponse(response.data);
+  // Sanitize and truncate before serializing
+  let processed = sanitizeGraphData(response.data);
+  processed = truncateRecipientLists(processed);
+  return formatToolResponse(processed);
 }

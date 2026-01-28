@@ -44,6 +44,7 @@ const searchMailSchema = z.object({
 
 const getMailMessageSchema = z.object({
   messageId: z.string(),
+  includeConversationHistory: z.boolean().optional().default(false),
 });
 
 const sendMailSchema = z.object({
@@ -465,10 +466,12 @@ function stripHtml(html: string): string {
  * Always returns body as plain text to minimize context window usage
  */
 async function getMailMessage(params: Record<string, unknown>) {
-  const { messageId } = getMailMessageSchema.parse(params);
+  const { messageId, includeConversationHistory } = getMailMessageSchema.parse(params);
   
   try {
-    const selectFields = 'id,subject,from,sender,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,isRead,isDraft,importance,hasAttachments,internetMessageId,conversationId,webLink,flag,body';
+    // Use uniqueBody (excludes conversation history) by default
+    const bodyField = includeConversationHistory ? 'body' : 'uniqueBody';
+    const selectFields = `id,subject,from,sender,toRecipients,ccRecipients,bccRecipients,replyTo,receivedDateTime,sentDateTime,isRead,isDraft,importance,hasAttachments,internetMessageId,conversationId,webLink,flag,${bodyField}`;
     
     const url = `/me/messages/${messageId}?$select=${encodeURIComponent(selectFields)}`;
     
@@ -484,9 +487,28 @@ async function getMailMessage(params: Record<string, unknown>) {
     if (result.content?.[0]?.type === 'text') {
       try {
         const data = JSON.parse(result.content[0].text);
-        if (data.body?.contentType?.toLowerCase() === 'html' && data.body?.content) {
-          data.body.content = stripHtml(data.body.content);
-          data.body.contentType = 'text';
+        
+        // Handle both body and uniqueBody fields
+        const bodyData = data.body || data.uniqueBody;
+        if (bodyData?.contentType?.toLowerCase() === 'html' && bodyData?.content) {
+          bodyData.content = stripHtml(bodyData.content);
+          bodyData.contentType = 'text';
+          
+          // Normalize field name to 'body' for consistency
+          if (data.uniqueBody) {
+            data.body = bodyData;
+            delete data.uniqueBody;
+          }
+          
+          return {
+            content: [{ type: 'text' as const, text: serializeResponse(data) }],
+          };
+        }
+        
+        // Normalize uniqueBody to body if present
+        if (data.uniqueBody && !data.body) {
+          data.body = data.uniqueBody;
+          delete data.uniqueBody;
           return {
             content: [{ type: 'text' as const, text: serializeResponse(data) }],
           };
@@ -977,6 +999,8 @@ Examples:
     name: 'get-mail-message',
     description: `Get full mail message content by ID. Returns body as plain text (HTML stripped) to minimize context window usage.
 
+By default, returns only the unique message body (excludes forwarded/replied conversation history) using Graph API's uniqueBody field. Set includeConversationHistory to true to get the full email thread.
+
 Use list-mail-messages or search-mail first to find message IDs and preview content, then use this tool only when you need the full message body.`,
     readOnly: true,
     requiredScopes: ['Mail.Read'],
@@ -986,6 +1010,10 @@ Use list-mail-messages or search-mail first to find message IDs and preview cont
         messageId: {
           type: 'string',
           description: 'The ID of the message to retrieve',
+        },
+        includeConversationHistory: {
+          type: 'boolean',
+          description: 'Include full email thread with forwarded/replied messages (default: false). By default, only the unique message content is returned.',
         },
       },
       required: ['messageId'],
