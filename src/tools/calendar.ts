@@ -210,7 +210,7 @@ const findMeetingTimesSchema = z.object({
   meetingHoursEnd: z.string().optional(),
   isOnlineMeeting: z.boolean().optional().default(false),
   isOrganizerOptional: z.boolean().optional().default(false),
-  maxSuggestions: z.number().min(1).max(50).optional().default(10),
+  maxSuggestions: z.number().min(1).max(10).optional().default(5),
   timeZone: z.string().optional(),
 });
 
@@ -668,8 +668,10 @@ async function findMeetingTimes(params: Record<string, unknown>) {
           return isWithinMeetingHours(startTime, meetingHoursStart, meetingHoursEnd);
         });
         
-        // Limit to requested maxSuggestions
-        const limitedSuggestions = filteredSuggestions.slice(0, maxSuggestions || 10);
+        // Limit to requested maxSuggestions (default 5, max 10)
+        const maxAllowed = 10;
+        const limit = Math.min(maxSuggestions || 5, maxAllowed);
+        const limitedSuggestions = filteredSuggestions.slice(0, limit);
         
         // Optimize response: filter busy attendees and group rooms by location
         const optimizedSuggestions = isOnlineMeeting === false 
@@ -722,10 +724,15 @@ async function findMeetingTimes(params: Record<string, unknown>) {
     } | undefined;
     
     if (data?.meetingTimeSuggestions) {
+      // Limit to requested maxSuggestions (default 5, max 10)
+      const maxAllowed = 10;
+      const limit = Math.min(maxSuggestions || 5, maxAllowed);
+      const limitedSuggestions = data.meetingTimeSuggestions.slice(0, limit);
+      
       // Optimize response: filter busy attendees and group rooms by location
       const optimizedSuggestions = isOnlineMeeting === false
-        ? optimizeMeetingTimesResponse(data.meetingTimeSuggestions, roomMetadata)
-        : data.meetingTimeSuggestions;
+        ? optimizeMeetingTimesResponse(limitedSuggestions, roomMetadata)
+        : limitedSuggestions;
       
       data.meetingTimeSuggestions = optimizedSuggestions.map(suggestion => {
         const timeSlot = suggestion.meetingTimeSlot as { start?: { dateTime?: string }; end?: { dateTime?: string } } | undefined;
@@ -1202,7 +1209,7 @@ After finding times, use create-calendar-event to book.`,
         },
         maxSuggestions: {
           type: 'number',
-          description: 'Maximum number of time slot suggestions to return (default: 10, max: 50)',
+          description: 'Maximum number of time slot suggestions to return (default: 5, max: 10)',
         },
         timeZone: {
           type: 'string',
