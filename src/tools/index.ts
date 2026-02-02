@@ -4,6 +4,7 @@
 
 import { mailToolDefinitions } from './mail.js';
 import { calendarToolDefinitions } from './calendar.js';
+import { peopleToolDefinitions } from './people.js';
 import { getConfig } from '../config.js';
 import logger from '../utils/logger.js';
 
@@ -31,6 +32,7 @@ export interface ToolDefinition {
 export const allTools: ToolDefinition[] = [
   ...mailToolDefinitions as ToolDefinition[],
   ...calendarToolDefinitions as ToolDefinition[],
+  ...peopleToolDefinitions as ToolDefinition[],
 ];
 
 /**
@@ -104,3 +106,4 @@ export function getRequiredScopes(): string[] {
  */
 export * from './mail.js';
 export * from './calendar.js';
+export * from './people.js';

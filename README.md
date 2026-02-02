@@ -28,7 +28,7 @@ MS365_MCP_TENANT_ID=your-tenant-id  # or 'common'
 ## Azure AD Setup
 
 1. [Azure Portal](https://portal.azure.com) → Microsoft Entra ID → App registrations → New
-2. Add delegated permissions: `User.Read`, `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`, `Calendars.ReadWrite`, `Calendars.Read.Shared`, `Place.Read.All`, `offline_access`
+2. Add delegated permissions: `User.Read`, `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`, `Calendars.ReadWrite`, `Calendars.Read.Shared`, `Place.Read.All`, `People.Read`, `offline_access`
 3. Add redirect URI: `http://localhost:6274/oauth/callback` (for MCP Inspector)
 4. Certificates & secrets → New client secret → Copy the value
 5. Copy Client ID, Client Secret, and Tenant ID to your `.env`
@@ -40,6 +40,9 @@ MS365_MCP_TENANT_ID=your-tenant-id  # or 'common'
 
 ### Calendar
 `list-calendars` · `list-calendar-events` · `search-calendar-events` · `find-meeting-times` · `get-calendar-event` · `get-calendar-view` · `create-calendar-event` · `update-calendar-event` · `delete-calendar-event`
+
+### People
+`lookup-contact-email`
 
 ## Room Search
 

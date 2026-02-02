@@ -1071,7 +1071,7 @@ Examples:
 
 EMAIL ADDRESSES REQUIRED:
 - organizerEmail/attendees expect EMAIL ADDRESSES (names don't work)
-- If you only have names: First use search-mail with {"query": "John Doe", "top": 5} to find emails, extract them from results, then call this tool
+- If you only have names: First use lookup-contact-email with {"query": "John Doe"} to find emails, then call this tool
 - DO NOT ask user for emails - look them up yourself
 
 Filtering notes:
@@ -1095,7 +1095,7 @@ Examples:
         },
         organizerEmail: {
           type: 'string',
-          description: 'Organizer EMAIL ADDRESS. If you only have a name, use search-mail with query parameter (e.g., {"query": "John Doe"}) to find their email first.',
+          description: 'Organizer EMAIL ADDRESS. If you only have a name, use lookup-contact-email to find their email first.',
         },
         organizerName: {
           type: 'string',
@@ -1104,7 +1104,7 @@ Examples:
         attendees: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Attendee EMAIL ADDRESSES. If you only have names, use search-mail with query parameter to find their emails first. OR logic - matches if any attendee is found.',
+          description: 'Attendee EMAIL ADDRESSES. If you only have names, use lookup-contact-email to find their emails first. OR logic - matches if any attendee is found.',
         },
         isOnlineMeeting: {
           type: 'boolean',
@@ -1141,7 +1141,7 @@ AUTOMATIC ROOM LOOKUP (when isOnlineMeeting=false):
 - No need to manually specify rooms!
 
 EMAIL ADDRESSES REQUIRED:
-- If user provides names: First use search-mail with {"query": "Jane Smith", "top": 5} to find emails, extract from results, then call this tool
+- If user provides names: First use lookup-contact-email with {"query": "Jane Smith"} to find emails, then call this tool
 - DO NOT ask user for emails - look them up yourself
 
 ORGANIZER AVAILABILITY (critical):
@@ -1172,12 +1172,12 @@ After finding times, use create-calendar-event to book.`,
           items: {
             type: 'object',
             properties: {
-              email: { type: 'string', description: 'Attendee email address (e.g., "john@company.com"). If you only have a name, use search-mail to find their email first.' },
+              email: { type: 'string', description: 'Attendee email address. If you only have a name, use lookup-contact-email to find their email first.' },
               type: { type: 'string', enum: ['required', 'optional'], description: 'required = must attend, optional = nice to have' },
             },
             required: ['email'],
           },
-          description: 'List of attendees. Use simplified format: [{"email": "john@company.com", "type": "required"}]. Do NOT use Graph API format like emailAddress.address. If you only have names, use search-mail to find emails first.',
+          description: 'List of attendees. Use simplified format: [{"email": "john@company.com", "type": "required"}]. Do NOT use Graph API format like emailAddress.address. If you only have names, use lookup-contact-email to find emails first.',
         },
         durationMinutes: {
           type: 'number',
